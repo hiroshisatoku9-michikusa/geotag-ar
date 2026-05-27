@@ -1,0 +1,1407 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0a0e1a">
+<title>GEOTAG — Location AR</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
+<script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar-nft.js"></script>
+<style>
+:root {
+  --bg-deep: #060812;
+  --bg-night: #0a0e1a;
+  --bg-panel: #11162a;
+  --bg-panel-elevated: #1a2138;
+  --line-grid: rgba(120, 180, 255, 0.08);
+  --line-faint: rgba(120, 180, 255, 0.15);
+  --line-bright: rgba(120, 180, 255, 0.35);
+  --text-primary: #e8efff;
+  --text-secondary: #8a96b8;
+  --text-dim: #5a6584;
+  --accent-cyan: #00ffd1;
+  --accent-cyan-dim: rgba(0, 255, 209, 0.15);
+  --accent-amber: #ffb547;
+  --accent-magenta: #ff3d8e;
+  --danger: #ff4d6d;
+  --font-display: 'Syne', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: var(--bg-deep);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+/* ============================================
+   SHELL — メインコンテナ
+   ============================================ */
+#app {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background:
+    radial-gradient(ellipse at top, rgba(0, 80, 140, 0.15) 0%, transparent 50%),
+    radial-gradient(ellipse at bottom, rgba(80, 0, 120, 0.1) 0%, transparent 50%),
+    var(--bg-deep);
+}
+
+/* グリッド背景 */
+#app::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(var(--line-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--line-grid) 1px, transparent 1px);
+  background-size: 32px 32px;
+  pointer-events: none;
+  z-index: 0;
+  mask-image: radial-gradient(ellipse at center, black 30%, transparent 80%);
+  -webkit-mask-image: radial-gradient(ellipse at center, black 30%, transparent 80%);
+}
+
+/* ノイズテクスチャ */
+#app::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.4'/%3E%3C/svg%3E");
+  opacity: 0.03;
+  pointer-events: none;
+  z-index: 1;
+  mix-blend-mode: overlay;
+}
+
+/* ============================================
+   HEADER — 上部のステータスバー
+   ============================================ */
+.header {
+  position: relative;
+  z-index: 100;
+  padding: 20px 20px 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.brand {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.brand-mark {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  position: relative;
+}
+
+.brand-mark::before {
+  content: '◉';
+  color: var(--accent-cyan);
+  margin-right: 8px;
+  font-size: 14px;
+  vertical-align: middle;
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.9); }
+}
+
+.brand-tag {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 0.2em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  padding-left: 22px;
+}
+
+.status-cluster {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  font-size: 9px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
+.coord-display {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: right;
+  letter-spacing: 0.05em;
+}
+
+.coord-display .lat,
+.coord-display .lng {
+  font-variant-numeric: tabular-nums;
+}
+
+.coord-label {
+  color: var(--text-dim);
+  font-size: 8px;
+  letter-spacing: 0.15em;
+}
+
+/* ============================================
+   MODE SWITCHER — モード切り替えタブ
+   ============================================ */
+.mode-switcher {
+  position: relative;
+  z-index: 50;
+  margin: 16px 20px;
+  background: var(--bg-panel);
+  border: 1px solid var(--line-faint);
+  border-radius: 2px;
+  padding: 4px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  position: relative;
+}
+
+.mode-tab {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  padding: 12px 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 0.3s ease;
+  position: relative;
+  z-index: 2;
+}
+
+.mode-tab.active {
+  color: var(--bg-deep);
+}
+
+.mode-tab-indicator {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: calc(50% - 4px);
+  height: calc(100% - 8px);
+  background: var(--accent-cyan);
+  border-radius: 2px;
+  transition: transform 0.4s cubic-bezier(0.65, 0, 0.35, 1);
+  z-index: 1;
+  box-shadow: 0 0 20px var(--accent-cyan-dim);
+}
+
+.mode-tab-indicator.mode-2 {
+  transform: translateX(100%);
+}
+
+/* ============================================
+   VIEW CONTAINER — 各モードのコンテナ
+   ============================================ */
+.view {
+  position: absolute;
+  inset: 0;
+  padding-top: 110px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  z-index: 10;
+  display: none;
+}
+
+.view.active {
+  display: block;
+}
+
+.view-content {
+  padding: 0 20px 100px;
+  position: relative;
+}
+
+/* ============================================
+   SECTION HEADERS
+   ============================================ */
+.section-title {
+  font-family: var(--font-display);
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  margin-bottom: 6px;
+  color: var(--text-primary);
+}
+
+.section-subtitle {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.section-subtitle::before {
+  content: '';
+  width: 24px;
+  height: 1px;
+  background: var(--accent-cyan);
+}
+
+/* ============================================
+   FORM — 登録モードのフォーム
+   ============================================ */
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.form-label .hint {
+  color: var(--text-dim);
+  font-size: 9px;
+  text-transform: none;
+  letter-spacing: 0.05em;
+}
+
+.form-input,
+.form-select,
+.form-textarea {
+  width: 100%;
+  padding: 14px 16px;
+  background: var(--bg-panel);
+  border: 1px solid var(--line-faint);
+  border-radius: 2px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  transition: all 0.2s ease;
+  outline: none;
+}
+
+.form-input:focus,
+.form-select:focus,
+.form-textarea:focus {
+  border-color: var(--accent-cyan);
+  background: var(--bg-panel-elevated);
+  box-shadow: 0 0 0 3px var(--accent-cyan-dim);
+}
+
+.form-input::placeholder {
+  color: var(--text-dim);
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.address-search {
+  position: relative;
+}
+
+.geocode-btn {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: var(--accent-cyan);
+  border: none;
+  color: var(--bg-deep);
+  padding: 8px 14px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: all 0.2s ease;
+}
+
+.geocode-btn:hover:not(:disabled) {
+  background: #00e6bc;
+}
+
+.geocode-btn:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+.coords-result {
+  margin-top: 8px;
+  padding: 12px;
+  background: var(--bg-panel);
+  border-left: 2px solid var(--accent-cyan);
+  font-size: 11px;
+  color: var(--text-secondary);
+  display: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.coords-result.visible {
+  display: block;
+  animation: slide-in 0.3s ease;
+}
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ============================================
+   IMAGE UPLOADER
+   ============================================ */
+.image-uploader {
+  position: relative;
+  border: 1px dashed var(--line-bright);
+  border-radius: 2px;
+  background: var(--bg-panel);
+  aspect-ratio: 16 / 9;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  overflow: hidden;
+  transition: all 0.2s ease;
+}
+
+.image-uploader:hover {
+  border-color: var(--accent-cyan);
+  background: var(--bg-panel-elevated);
+}
+
+.image-uploader.has-image {
+  border-style: solid;
+  border-color: var(--accent-cyan);
+}
+
+.image-uploader input[type="file"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.image-uploader-icon {
+  font-size: 28px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+  font-family: var(--font-display);
+  font-weight: 800;
+}
+
+.image-uploader-text {
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.image-uploader-preview {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.image-url-toggle {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.toggle-btn {
+  flex: 1;
+  padding: 8px;
+  background: transparent;
+  border: 1px solid var(--line-faint);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: all 0.2s ease;
+}
+
+.toggle-btn.active {
+  background: var(--accent-cyan);
+  color: var(--bg-deep);
+  border-color: var(--accent-cyan);
+}
+
+/* ============================================
+   CATEGORY PICKER
+   ============================================ */
+.category-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.category-chip {
+  padding: 8px 14px;
+  background: var(--bg-panel);
+  border: 1px solid var(--line-faint);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: 100px;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.category-chip::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--cat-color, var(--text-dim));
+}
+
+.category-chip.selected {
+  background: var(--bg-panel-elevated);
+  border-color: var(--cat-color, var(--accent-cyan));
+  color: var(--text-primary);
+}
+
+.add-category-btn {
+  padding: 8px 14px;
+  background: transparent;
+  border: 1px dashed var(--line-bright);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: 100px;
+}
+
+.add-category-btn:hover {
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+}
+
+/* ============================================
+   PRIMARY ACTION BUTTON
+   ============================================ */
+.btn-primary {
+  width: 100%;
+  padding: 16px;
+  background: var(--accent-cyan);
+  color: var(--bg-deep);
+  border: none;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: all 0.2s ease;
+  margin-top: 24px;
+  position: relative;
+  overflow: hidden;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #00e6bc;
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px var(--accent-cyan-dim);
+}
+
+.btn-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  width: 100%;
+  padding: 14px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--line-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: 2px;
+  margin-top: 12px;
+  transition: all 0.2s ease;
+}
+
+.btn-secondary:hover {
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+}
+
+/* ============================================
+   REGISTERED ITEMS LIST
+   ============================================ */
+.divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 40px 0 20px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.divider::before,
+.divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--line-faint);
+}
+
+.item-card {
+  display: grid;
+  grid-template-columns: 60px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--line-faint);
+  border-radius: 2px;
+  margin-bottom: 8px;
+  position: relative;
+  overflow: hidden;
+}
+
+.item-card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--item-color, var(--accent-cyan));
+}
+
+.item-thumb {
+  width: 60px;
+  height: 60px;
+  background: var(--bg-deep);
+  border-radius: 2px;
+  background-size: cover;
+  background-position: center;
+  flex-shrink: 0;
+}
+
+.item-info {
+  min-width: 0;
+}
+
+.item-name {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.item-meta {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-dim);
+  letter-spacing: 0.05em;
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+.item-category {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--item-color, var(--text-secondary));
+  margin-top: 4px;
+}
+
+.item-delete {
+  background: transparent;
+  border: 1px solid var(--line-faint);
+  color: var(--text-dim);
+  width: 32px;
+  height: 32px;
+  border-radius: 2px;
+  cursor: pointer;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.item-delete:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.empty-state {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text-dim);
+}
+
+.empty-state-icon {
+  font-family: var(--font-display);
+  font-size: 48px;
+  font-weight: 800;
+  color: var(--line-bright);
+  margin-bottom: 12px;
+  letter-spacing: -0.05em;
+}
+
+.empty-state-text {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+
+/* ============================================
+   AR CAMERA VIEW
+   ============================================ */
+#ar-view {
+  padding-top: 0;
+}
+
+.ar-container {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  z-index: 9999;
+  display: none;
+}
+
+.ar-container.active {
+  display: block;
+}
+
+.ar-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  pointer-events: none;
+}
+
+.ar-overlay > * {
+  pointer-events: auto;
+}
+
+/* AR HUD */
+.ar-hud-top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  background: linear-gradient(180deg, rgba(0,0,0,0.7) 0%, transparent 100%);
+}
+
+.ar-close {
+  background: rgba(10, 14, 26, 0.8);
+  border: 1px solid var(--line-bright);
+  color: var(--text-primary);
+  width: 40px;
+  height: 40px;
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 16px;
+  cursor: pointer;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.ar-status {
+  background: rgba(10, 14, 26, 0.8);
+  border: 1px solid var(--line-faint);
+  padding: 8px 14px;
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-primary);
+  letter-spacing: 0.1em;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ar-status .status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-cyan);
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+/* AR Crosshair */
+.ar-crosshair {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 60px;
+  height: 60px;
+  pointer-events: none;
+}
+
+.ar-crosshair::before,
+.ar-crosshair::after {
+  content: '';
+  position: absolute;
+  background: var(--accent-cyan);
+  opacity: 0.6;
+}
+
+.ar-crosshair::before {
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 1px;
+  transform: translateY(-50%);
+}
+
+.ar-crosshair::after {
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  transform: translateX(-50%);
+}
+
+.ar-crosshair-circle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--accent-cyan);
+  border-radius: 50%;
+}
+
+/* AR Bottom Controls */
+.ar-hud-bottom {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 20px;
+  background: linear-gradient(0deg, rgba(0,0,0,0.85) 0%, transparent 100%);
+}
+
+.ar-categories-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-dim);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.ar-categories {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+  scrollbar-width: none;
+}
+
+.ar-categories::-webkit-scrollbar {
+  display: none;
+}
+
+.ar-cat-toggle {
+  background: rgba(10, 14, 26, 0.85);
+  border: 1px solid var(--line-faint);
+  color: var(--text-secondary);
+  padding: 8px 14px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: 100px;
+  white-space: nowrap;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s ease;
+}
+
+.ar-cat-toggle::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--cat-color, var(--text-dim));
+  opacity: 0.4;
+}
+
+.ar-cat-toggle.active {
+  border-color: var(--cat-color, var(--accent-cyan));
+  color: var(--text-primary);
+}
+
+.ar-cat-toggle.active::before {
+  opacity: 1;
+  box-shadow: 0 0 8px var(--cat-color, var(--accent-cyan));
+}
+
+.ar-distance-bar {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.distance-label-row {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-dim);
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+
+.distance-value {
+  color: var(--accent-cyan);
+  font-variant-numeric: tabular-nums;
+}
+
+.distance-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 2px;
+  background: var(--line-faint);
+  outline: none;
+  border-radius: 0;
+}
+
+.distance-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  background: var(--accent-cyan);
+  cursor: pointer;
+  border-radius: 50%;
+  box-shadow: 0 0 12px var(--accent-cyan-dim);
+}
+
+.distance-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  background: var(--accent-cyan);
+  cursor: pointer;
+  border-radius: 50%;
+  border: none;
+}
+
+/* AR Big Launch Button */
+.ar-launch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  padding: 40px 0;
+}
+
+.ar-launch-display {
+  position: relative;
+  width: 240px;
+  height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ar-launch-rings {
+  position: absolute;
+  inset: 0;
+}
+
+.ar-launch-rings circle {
+  fill: none;
+  stroke: var(--accent-cyan);
+  opacity: 0.3;
+}
+
+.ar-launch-rings .ring-1 { animation: ring-pulse 3s ease-in-out infinite; }
+.ar-launch-rings .ring-2 { animation: ring-pulse 3s ease-in-out infinite 0.5s; }
+.ar-launch-rings .ring-3 { animation: ring-pulse 3s ease-in-out infinite 1s; }
+
+@keyframes ring-pulse {
+  0%, 100% { opacity: 0.1; r: 60; }
+  50% { opacity: 0.5; r: 100; }
+}
+
+.ar-launch-center {
+  width: 120px;
+  height: 120px;
+  background: var(--bg-panel);
+  border: 2px solid var(--accent-cyan);
+  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  position: relative;
+  z-index: 2;
+  transition: all 0.3s ease;
+  box-shadow: 0 0 40px var(--accent-cyan-dim);
+}
+
+.ar-launch-center:hover {
+  background: var(--accent-cyan);
+  color: var(--bg-deep);
+}
+
+.ar-launch-center .icon {
+  font-family: var(--font-display);
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: -0.05em;
+}
+
+.ar-launch-center .label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+
+.ar-info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  width: 100%;
+  margin-top: 8px;
+}
+
+.ar-info-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--line-faint);
+  padding: 14px;
+  border-radius: 2px;
+}
+
+.ar-info-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-dim);
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.ar-info-value {
+  font-family: var(--font-display);
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1;
+}
+
+.ar-info-unit {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin-left: 4px;
+}
+
+/* ============================================
+   TOAST
+   ============================================ */
+.toast {
+  position: fixed;
+  top: 80px;
+  left: 50%;
+  transform: translateX(-50%) translateY(-20px);
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--accent-cyan);
+  padding: 12px 20px;
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+  z-index: 99999;
+  opacity: 0;
+  transition: all 0.3s ease;
+  pointer-events: none;
+  letter-spacing: 0.05em;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  white-space: nowrap;
+}
+
+.toast.visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.toast.error {
+  border-color: var(--danger);
+}
+
+/* ============================================
+   MODAL (新カテゴリ作成)
+   ============================================ */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 8, 18, 0.85);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 9000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.modal-backdrop.visible {
+  display: flex;
+}
+
+.modal {
+  background: var(--bg-panel);
+  border: 1px solid var(--line-bright);
+  border-radius: 2px;
+  width: 100%;
+  max-width: 400px;
+  padding: 24px;
+}
+
+.modal-title {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 700;
+  margin-bottom: 20px;
+}
+
+.color-picker-row {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+  margin: 12px 0 20px;
+}
+
+.color-swatch {
+  aspect-ratio: 1;
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: all 0.2s ease;
+}
+
+.color-swatch.selected {
+  border-color: var(--text-primary);
+  transform: scale(1.1);
+}
+
+.modal-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+/* ============================================
+   SCROLLBAR
+   ============================================ */
+.view::-webkit-scrollbar {
+  width: 4px;
+}
+
+.view::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.view::-webkit-scrollbar-thumb {
+  background: var(--line-faint);
+  border-radius: 0;
+}
+
+/* ============================================
+   AR SCENE
+   ============================================ */
+.a-enter-vr, .a-orientation-modal {
+  display: none !important;
+}
+
+#arScene {
+  width: 100%;
+  height: 100%;
+}
+</style>
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ===== HEADER ===== -->
+  <header class="header">
+    <div class="brand">
+      <div class="brand-mark">GEOTAG</div>
+      <div class="brand-tag">Location · AR · v0.1</div>
+    </div>
+    <div class="status-cluster">
+      <div class="coord-display">
+        <span class="coord-label">YOUR POSITION</span>
+        <span class="lat" id="userLat">— · — · —</span>
+        <span class="lng" id="userLng">— · — · —</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ===== MODE SWITCHER ===== -->
+  <div class="mode-switcher">
+    <div class="mode-tab-indicator" id="modeIndicator"></div>
+    <button class="mode-tab active" data-mode="camera">◎ AR Camera</button>
+    <button class="mode-tab" data-mode="register">+ Register</button>
+  </div>
+
+  <!-- ===== AR CAMERA VIEW ===== -->
+  <div class="view active" id="cameraView">
+    <div class="view-content">
+      <h1 class="section-title">Spatial<br>Overlay</h1>
+      <div class="section-subtitle">Initialize the lens</div>
+
+      <div class="ar-launch">
+        <div class="ar-launch-display">
+          <svg class="ar-launch-rings" viewBox="0 0 240 240">
+            <circle class="ring-1" cx="120" cy="120" r="60" stroke-width="1"/>
+            <circle class="ring-2" cx="120" cy="120" r="80" stroke-width="1"/>
+            <circle class="ring-3" cx="120" cy="120" r="100" stroke-width="1"/>
+          </svg>
+          <button class="ar-launch-center" id="launchAR">
+            <div class="icon">◉</div>
+            <div class="label">Launch</div>
+          </button>
+        </div>
+
+        <div class="ar-info-grid">
+          <div class="ar-info-card">
+            <div class="ar-info-label">Registered</div>
+            <div class="ar-info-value" id="itemCount">0<span class="ar-info-unit">tags</span></div>
+          </div>
+          <div class="ar-info-card">
+            <div class="ar-info-label">In Range</div>
+            <div class="ar-info-value" id="inRangeCount">0<span class="ar-info-unit">visible</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="divider">Active Categories</div>
+      <div id="categoryToggles" class="category-picker"></div>
+
+      <div class="ar-distance-bar" style="margin-top: 20px;">
+        <div class="distance-label-row">
+          <span>Display Radius</span>
+          <span class="distance-value"><span id="distanceVal">500</span> M</span>
+        </div>
+        <input type="range" min="50" max="2000" value="500" step="50" class="distance-slider" id="distanceSlider">
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== REGISTER VIEW ===== -->
+  <div class="view" id="registerView">
+    <div class="view-content">
+      <h1 class="section-title">Tag a<br>Location</h1>
+      <div class="section-subtitle">Place an image in space</div>
+
+      <!-- 住所 -->
+      <div class="form-group">
+        <label class="form-label">
+          <span>Address</span>
+          <span class="hint">タップで現在地</span>
+        </label>
+        <div class="address-search">
+          <input type="text" class="form-input" id="addressInput" placeholder="例: 東京タワー / 1-1 Marunouchi" autocomplete="off" style="padding-right: 110px;">
+          <button type="button" class="geocode-btn" id="geocodeBtn">Locate</button>
+        </div>
+        <div class="coords-result" id="coordsResult">
+          <div>LAT: <span id="resultLat">—</span></div>
+          <div>LNG: <span id="resultLng">—</span></div>
+        </div>
+        <button type="button" class="btn-secondary" id="useCurrentLocation" style="margin-top: 8px;">◎ Use My Current Location</button>
+      </div>
+
+      <!-- 名前 -->
+      <div class="form-group">
+        <label class="form-label"><span>Label</span><span class="hint">名前</span></label>
+        <input type="text" class="form-input" id="itemName" placeholder="例: 隠れ家カフェ" maxlength="40">
+      </div>
+
+      <!-- 画像 -->
+      <div class="form-group">
+        <label class="form-label"><span>Image</span><span class="hint">URL or Upload</span></label>
+        <div class="image-url-toggle">
+          <button type="button" class="toggle-btn active" data-img-mode="upload">UPLOAD</button>
+          <button type="button" class="toggle-btn" data-img-mode="url">URL</button>
+        </div>
+        <div id="uploadMode">
+          <label class="image-uploader" id="imageUploader">
+            <input type="file" accept="image/*" id="imageFile">
+            <div class="image-uploader-icon">+</div>
+            <div class="image-uploader-text">Tap to upload</div>
+            <img class="image-uploader-preview" id="imagePreview" style="display:none;">
+          </label>
+        </div>
+        <div id="urlMode" style="display:none;">
+          <input type="text" class="form-input" id="imageUrl" placeholder="https://example.com/image.png">
+        </div>
+      </div>
+
+      <!-- カテゴリ -->
+      <div class="form-group">
+        <label class="form-label"><span>Category</span><span class="hint">表示グループ</span></label>
+        <div class="category-picker" id="categoryPicker"></div>
+        <button type="button" class="add-category-btn" id="addCategoryBtn">+ Create New</button>
+      </div>
+
+      <button class="btn-primary" id="saveBtn">Register Tag</button>
+
+      <!-- 登録済み一覧 -->
+      <div class="divider">Registered Tags · <span id="totalTagCount">0</span></div>
+      <div id="itemsList"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== AR FULLSCREEN ===== -->
+<div class="ar-container" id="arContainer">
+  <a-scene
+    id="arScene"
+    embedded
+    vr-mode-ui="enabled: false"
+    arjs="sourceType: webcam; videoTexture: true; debugUIEnabled: false;"
+    renderer="antialias: true; alpha: true">
+    <a-camera gps-camera rotation-reader></a-camera>
+    <a-entity id="arEntities"></a-entity>
+  </a-scene>
+
+  <div class="ar-overlay">
+    <div class="ar-hud-top">
+      <button class="ar-close" id="closeAR">×</button>
+      <div class="ar-status">
+        <span class="status-dot"></span>
+        <span id="arStatusText">LOCATING...</span>
+      </div>
+    </div>
+
+    <div class="ar-crosshair">
+      <div class="ar-crosshair-circle"></div>
+    </div>
+
+    <div class="ar-hud-bottom">
+      <div class="ar-categories-label">Active Categories</div>
+      <div class="ar-categories" id="arCategoryToggles"></div>
+      <div class="ar-distance-bar">
+        <div class="distance-label-row">
+          <span>Radius · <span id="arVisibleCount">0</span> in view</span>
+          <span class="distance-value"><span id="arDistanceVal">500</span> M</span>
+        </div>
+        <input type="range" min="50" max="2000" value="500" step="50" class="distance-slider" id="arDistanceSlider">
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== TOAST ===== -->
+<div class="toast" id="toast"></div>
+
+<!-- ===== MODAL: New Category ===== -->
+<div class="modal-backdrop" id="categoryModal">
+  <div class="modal">
+    <div class="modal-title">New Category</div>
+    <input type="text" class="form-input" id="newCategoryName" placeholder="Category name" maxlength="20">
+    <label class="form-label" style="margin-top: 16px;"><span>Color</span></label>
+    <div class="color-picker-row" id="colorPicker"></div>
+    <div class="modal-actions">
+      <button class="btn-secondary" id="cancelCategoryBtn">Cancel</button>
+      <button class="btn-primary" id="confirmCategoryBtn" style="margin-top: 0;">Create</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
