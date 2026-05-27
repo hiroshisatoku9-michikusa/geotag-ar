@@ -158,19 +158,35 @@ function watchUserLocation() {
   );
 }
 
+// 日本の住所は番地・建物番号が末尾に来る。Nominatim は番地まで解決できない
+// ことが多いので、フル住所で空振りしたら数字以降を外した町名で再検索する。
+function buildAddressVariants(address) {
+  const variants = [address];
+  const noNum = address.replace(/[0-9０-９].*$/u, '').trim();
+  if (noNum && noNum !== address) variants.push(noNum);
+  return variants;
+}
+
 async function geocodeAddress(address) {
-  const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&limit=1`;
-  const res = await fetch(url, {
-    headers: { 'Accept': 'application/json' }
-  });
-  if (!res.ok) throw new Error('Geocoding failed');
-  const data = await res.json();
-  if (!data || data.length === 0) throw new Error('Address not found');
-  return {
-    lat: parseFloat(data[0].lat),
-    lng: parseFloat(data[0].lon),
-    displayName: data[0].display_name
-  };
+  const variants = buildAddressVariants(address);
+  for (let i = 0; i < variants.length; i++) {
+    const url = `https://nominatim.openstreetmap.org/search?format=json&accept-language=ja&limit=1&q=${encodeURIComponent(variants[i])}`;
+    let res;
+    try {
+      res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    } catch (_) { continue; }
+    if (!res.ok) continue;
+    const data = await res.json();
+    if (data && data.length) {
+      return {
+        lat: parseFloat(data[0].lat),
+        lng: parseFloat(data[0].lon),
+        displayName: data[0].display_name,
+        approximate: i > 0
+      };
+    }
+  }
+  throw new Error('Address not found');
 }
 
 function initGeocoding() {
@@ -190,9 +206,9 @@ function initGeocoding() {
       document.getElementById('resultLat').textContent = formatCoord(coords.lat);
       document.getElementById('resultLng').textContent = formatCoord(coords.lng);
       resultEl.classList.add('visible');
-      toast('位置を取得しました');
+      toast(coords.approximate ? '番地までは特定できず、町名のおおよその位置です' : '位置を取得しました', coords.approximate);
     } catch (e) {
-      toast('住所が見つかりませんでした', true);
+      toast('住所が見つかりません。下の「現在地を使う」が確実です', true);
     } finally {
       btn.disabled = false;
       btn.textContent = 'Locate';
