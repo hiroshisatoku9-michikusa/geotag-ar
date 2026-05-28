@@ -635,6 +635,7 @@ function mountARScene() {
 }
 
 function unmountARScene() {
+  if (_arVideoObserver) { _arVideoObserver.disconnect(); _arVideoObserver = null; }
   const scene = document.getElementById('arScene');
   if (scene) scene.parentNode && scene.parentNode.removeChild(scene);
   // AR.js が body 直下や他所に挿した video もカメラを止めて削除
@@ -648,6 +649,36 @@ function unmountARScene() {
 }
 
 // AR.js が挿入した <video> を AR コンテナ内に取り込み、確実に全画面で再生させる。
+// AR.js は video.style に transform/translate と絶対px幅高さをインラインで書き込み、
+// portrait のスマホだと中央に細い縦帯として表示されてしまう。cssText で完全に
+// 上書きし、AR.js が style 属性を書き換えてきても MutationObserver で即時上書きする。
+const AR_VIDEO_CSS = [
+  'position:absolute',
+  'top:0',
+  'left:0',
+  'right:0',
+  'bottom:0',
+  'width:100%',
+  'height:100%',
+  'max-width:none',
+  'max-height:none',
+  'min-width:0',
+  'min-height:0',
+  'margin:0',
+  'padding:0',
+  'transform:none',
+  'object-fit:cover',
+  'z-index:1',
+  'display:block',
+  'opacity:1'
+].map(s => s + ' !important').join(';') + ';';
+
+let _arVideoObserver = null;
+
+function forceVideoStyle(v) {
+  if (v.style.cssText !== AR_VIDEO_CSS) v.style.cssText = AR_VIDEO_CSS;
+}
+
 function fixARJSVideoPlacement() {
   const container = document.getElementById('arContainer');
   const v = document.getElementById('arjs-video') || document.querySelector('video.arjs-video');
@@ -656,7 +687,14 @@ function fixARJSVideoPlacement() {
   v.setAttribute('playsinline', '');
   v.setAttribute('webkit-playsinline', '');
   v.muted = true;
-  // iOS では明示 play 必要なケースがある
+  forceVideoStyle(v);
+
+  // AR.js が後から style を書き換えてきても即座に戻す
+  if (_arVideoObserver) _arVideoObserver.disconnect();
+  _arVideoObserver = new MutationObserver(() => forceVideoStyle(v));
+  _arVideoObserver.observe(v, { attributes: true, attributeFilter: ['style'] });
+
+  // iOS では明示 play() が要るケースがある
   const p = v.play && v.play();
   if (p && p.catch) p.catch(() => {});
   return true;
