@@ -613,6 +613,55 @@ function renderARScene() {
   document.getElementById('arVisibleCount').textContent = visibleCount;
 }
 
+// ---- AR scene の動的マウント／破棄 ----
+// iOS Safari では <a-scene> を display:none の親に最初から置くと
+// カメラ初期化に失敗するため、LAUNCH 押下時にユーザージェスチャー内で生成する。
+function mountARScene() {
+  const container = document.getElementById('arContainer');
+  if (container.querySelector('a-scene')) return;
+  const scene = document.createElement('a-scene');
+  scene.id = 'arScene';
+  scene.setAttribute('embedded', '');
+  scene.setAttribute('vr-mode-ui', 'enabled: false');
+  // videoTexture は付けない（iOS で黒画面を招く）。default の <video> DOM 経路を使う。
+  scene.setAttribute('arjs', 'sourceType: webcam; debugUIEnabled: false;');
+  scene.setAttribute('renderer', 'antialias: true; alpha: true');
+  scene.innerHTML = `
+    <a-camera gps-camera rotation-reader></a-camera>
+    <a-entity id="arEntities"></a-entity>
+  `;
+  // overlay より背面に来るよう先頭に挿入
+  container.insertBefore(scene, container.firstChild);
+}
+
+function unmountARScene() {
+  const scene = document.getElementById('arScene');
+  if (scene) scene.parentNode && scene.parentNode.removeChild(scene);
+  // AR.js が body 直下や他所に挿した video もカメラを止めて削除
+  document.querySelectorAll('video#arjs-video, video.arjs-video').forEach(v => {
+    try {
+      const stream = v.srcObject;
+      if (stream && stream.getTracks) stream.getTracks().forEach(t => t.stop());
+    } catch (_) {}
+    v.parentNode && v.parentNode.removeChild(v);
+  });
+}
+
+// AR.js が挿入した <video> を AR コンテナ内に取り込み、確実に全画面で再生させる。
+function fixARJSVideoPlacement() {
+  const container = document.getElementById('arContainer');
+  const v = document.getElementById('arjs-video') || document.querySelector('video.arjs-video');
+  if (!container || !v) return false;
+  if (v.parentNode !== container) container.appendChild(v);
+  v.setAttribute('playsinline', '');
+  v.setAttribute('webkit-playsinline', '');
+  v.muted = true;
+  // iOS では明示 play 必要なケースがある
+  const p = v.play && v.play();
+  if (p && p.catch) p.catch(() => {});
+  return true;
+}
+
 function initARLaunch() {
   document.getElementById('launchAR').addEventListener('click', async () => {
     if (state.items.length === 0) {
@@ -624,9 +673,8 @@ function initARLaunch() {
       return;
     }
 
-    // カメラ・位置情報のパーミッション確認
+    // iOS: 端末方向センサーの許可
     try {
-      // モバイル: 端末方向の許可（iOS）
       if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
         const orientationPermission = await DeviceOrientationEvent.requestPermission();
         if (orientationPermission !== 'granted') {
@@ -638,16 +686,23 @@ function initARLaunch() {
       console.warn(e);
     }
 
+    // コンテナを表示してからシーンを動的マウント（ユーザージェスチャー内）
     document.getElementById('arContainer').classList.add('active');
-    document.getElementById('arStatusText').textContent = 'TRACKING';
-    renderARScene();
-    
-    // 再レンダーを少し遅らせる
-    setTimeout(renderARScene, 1500);
+    document.getElementById('arStatusText').textContent = 'LOCATING...';
+    mountARScene();
+
+    // AR.js が video を挿入するまで少し時間がかかる。複数回試して取り込み・再生させる。
+    [200, 700, 1500, 3000].forEach(t => setTimeout(() => {
+      if (fixARJSVideoPlacement()) {
+        document.getElementById('arStatusText').textContent = 'TRACKING';
+      }
+      renderARScene();
+    }, t));
   });
 
   document.getElementById('closeAR').addEventListener('click', () => {
     document.getElementById('arContainer').classList.remove('active');
+    unmountARScene();
   });
 }
 
