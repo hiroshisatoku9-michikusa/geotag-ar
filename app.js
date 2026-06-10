@@ -1094,6 +1094,100 @@ function initARLaunch() {
 }
 
 // ====================================================
+// DEV: サンプルデータ生成
+// ?seed=100            … 現在地の半径200m内に100件配置（GPS取得後に一度だけ）
+// ?seed=100&seedradius=500 … 半径を指定
+// ?unseed=1            … シードしたサンプルだけ全削除（手動登録分は残る）
+// ====================================================
+function makeSampleImage(n, color) {
+  const c = document.createElement('canvas');
+  c.width = 160; c.height = 120;
+  const ctx = c.getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, 160, 120);
+  g.addColorStop(0, color);
+  g.addColorStop(1, '#101522');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 160, 120);
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.font = 'bold 44px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(String(n), 80, 60);
+  return c.toDataURL('image/jpeg', 0.7);
+}
+
+function seedSampleData(count, radiusM) {
+  const { lat, lng } = state.userCoords;
+  for (let i = 1; i <= count; i++) {
+    // 面積一様分布（sqrt しないと中心に偏る）
+    const r = radiusM * Math.sqrt(Math.random());
+    const th = Math.random() * 2 * Math.PI;
+    const dLat = (r * Math.cos(th)) / 111320;
+    const dLng = (r * Math.sin(th)) / (111320 * Math.cos(lat * Math.PI / 180));
+    const cat = state.categories[Math.floor(Math.random() * state.categories.length)];
+    state.items.push({
+      id: uid(),
+      name: 'Sample ' + String(i).padStart(3, '0'),
+      lat: lat + dLat,
+      lng: lng + dLng,
+      address: 'Seeded sample',
+      image: makeSampleImage(i, cat.color),
+      categoryId: cat.id,
+      // 半分は向き固定、半分はビルボード（両方の挙動をテストできるように）
+      heading: Math.random() < 0.5 ? Math.floor(Math.random() * 360) : null,
+      seed: true,
+      createdAt: Date.now()
+    });
+  }
+  save();
+}
+
+function removeSampleData() {
+  const before = state.items.length;
+  state.items = state.items.filter(i => !i.seed);
+  save();
+  return before - state.items.length;
+}
+
+function refreshAfterSeed() {
+  renderItemList();
+  renderCategoryToggles();
+  updateItemCount();
+  updateInRangeCount();
+}
+
+function initSeedFromURL() {
+  const params = new URLSearchParams(location.search);
+
+  if (params.has('unseed')) {
+    const n = removeSampleData();
+    refreshAfterSeed();
+    toast(`サンプル ${n} 件を削除しました`);
+    history.replaceState(null, '', location.pathname); // リロードでの再実行を防ぐ
+    return;
+  }
+
+  const n = Math.min(parseInt(params.get('seed'), 10) || 0, 500);
+  if (n <= 0) return;
+  const radius = parseInt(params.get('seedradius'), 10) || 200;
+
+  // GPSが取れてから一度だけ実行
+  const timer = setInterval(() => {
+    if (!state.userCoords) return;
+    clearInterval(timer);
+    try {
+      seedSampleData(n, radius);
+      refreshAfterSeed();
+      toast(`現在地の半径${radius}m内にサンプル ${n} 件を配置しました`);
+    } catch (e) {
+      // localStorage 容量超過など
+      toast('サンプル生成に失敗: ' + e.message, true);
+    }
+    history.replaceState(null, '', location.pathname);
+  }, 500);
+}
+
+// ====================================================
 // INIT
 // ====================================================
 function init() {
@@ -1111,6 +1205,7 @@ function init() {
   renderItemList();
   updateItemCount();
   watchUserLocation();
+  initSeedFromURL();
 
   // モバイルブラウザの位置情報が出るまでの間、AR起動を案内
   if (!navigator.geolocation) {
