@@ -1075,22 +1075,40 @@ function initARLaunch() {
     mountARScene();
     startHeadingTracker(); // 許可取得後なので iOS でも webkitCompassHeading が来る
     startARLoop();
-
-    // AR.js が video を挿入するまで少し時間がかかる。複数回試して取り込み・再生させる。
-    [200, 700, 1500, 3000].forEach(t => setTimeout(() => {
-      if (fixARJSVideoPlacement()) {
-        document.getElementById('arStatusText').textContent = 'TRACKING';
-      }
-      renderARScene();
-    }, t));
+    startVideoFixer();
   });
 
   document.getElementById('closeAR').addEventListener('click', () => {
     collapseItem();
     stopARLoop();
+    stopVideoFixer();
     document.getElementById('arContainer').classList.remove('active');
     unmountARScene();
   });
+}
+
+// AR.js が <video> を挿入するタイミングは、カメラ許可ダイアログのタップ待ちで
+// 数秒〜数十秒遅れることがある（固定回数のリトライだと時間切れで黒画面になる）。
+// 成功するまで定期的に試し続け、見つけた時点で TRACKING に切り替える。
+let _videoFixTimer = null;
+function startVideoFixer() {
+  stopVideoFixer();
+  let attempts = 0;
+  _videoFixTimer = setInterval(() => {
+    attempts++;
+    if (fixARJSVideoPlacement()) {
+      document.getElementById('arStatusText').textContent = 'TRACKING';
+      renderARScene();
+      stopVideoFixer();
+    } else if (attempts > 150) { // 約60秒で諦める
+      stopVideoFixer();
+      document.getElementById('arStatusText').textContent = 'CAMERA ERROR';
+      toast('カメラ映像を取得できませんでした。一度閉じて再起動してください', true);
+    }
+  }, 400);
+}
+function stopVideoFixer() {
+  if (_videoFixTimer) { clearInterval(_videoFixTimer); _videoFixTimer = null; }
 }
 
 // ====================================================
@@ -1171,14 +1189,26 @@ function initSeedFromURL() {
   if (n <= 0) return;
   const radius = parseInt(params.get('seedradius'), 10) || 200;
 
+  // パラメータを認識したことを即座に知らせる（古いキャッシュ版との切り分け用）
+  toast(`サンプル ${n} 件を生成します。GPS待機中…`);
+
   // GPSが取れてから一度だけ実行
+  let waited = 0;
   const timer = setInterval(() => {
-    if (!state.userCoords) return;
+    if (!state.userCoords) {
+      waited += 500;
+      if (waited >= 30000) {
+        clearInterval(timer);
+        toast('GPSが取得できずサンプル生成を中止しました', true);
+        history.replaceState(null, '', location.pathname);
+      }
+      return;
+    }
     clearInterval(timer);
     try {
       seedSampleData(n, radius);
       refreshAfterSeed();
-      toast(`現在地の半径${radius}m内にサンプル ${n} 件を配置しました`);
+      toast(`現在地の半径${radius}m内にサンプル ${n} 件を配置しました ✓`);
     } catch (e) {
       // localStorage 容量超過など
       toast('サンプル生成に失敗: ' + e.message, true);
