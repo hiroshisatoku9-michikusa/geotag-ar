@@ -24,6 +24,12 @@ const COLOR_PALETTE = [
   '#06d6a0', '#118ab2', '#f72585', '#7209b7'
 ];
 
+// v0.2 の距離しきい値
+const CARD_RADIUS_DEFAULT = 50; // m: ポラロイドカードが現れる半径（スライダーで可変）
+const ARROW_MIN_DIST = 10;      // m: 展開中、これ以上離れると方向矢印を表示
+const FIT_MAX_DIST = 10;        // m: 画角フィットを許可する距離
+const SETTINGS_VERSION = 2;     // displayRadius の意味が変わったため設定を移行
+
 // State
 let state = {
   items: [],
@@ -34,8 +40,11 @@ let state = {
   currentImage: null, // data URL or URL string
   geocodedCoords: null, // {lat, lng}
   userCoords: null,
-  displayRadius: 500,
-  selectedNewCategoryColor: COLOR_PALETTE[0]
+  displayRadius: CARD_RADIUS_DEFAULT,
+  selectedNewCategoryColor: COLOR_PALETTE[0],
+  expandedItemId: null,  // AR内で展開中のタグ
+  fitMode: false,        // 画角フィット操作中
+  deviceHeading: null    // コンパス方位（北=0, 時計回り）
 };
 
 // ====================================================
@@ -47,7 +56,10 @@ function load() {
     const savedCats = JSON.parse(localStorage.getItem(STORE_KEYS.CATEGORIES) || 'null');
     state.categories = savedCats || DEFAULT_CATEGORIES;
     const settings = JSON.parse(localStorage.getItem(STORE_KEYS.SETTINGS) || '{}');
-    state.displayRadius = settings.displayRadius || 500;
+    // v2: displayRadius は「カード出現半径」に意味が変わったため旧設定値は引き継がない
+    state.displayRadius = (settings.v === SETTINGS_VERSION && settings.displayRadius)
+      ? settings.displayRadius
+      : CARD_RADIUS_DEFAULT;
     const savedActive = settings.activeCategories;
     if (savedActive && Array.isArray(savedActive)) {
       state.activeCategories = new Set(savedActive);
@@ -65,6 +77,7 @@ function save() {
   localStorage.setItem(STORE_KEYS.ITEMS, JSON.stringify(state.items));
   localStorage.setItem(STORE_KEYS.CATEGORIES, JSON.stringify(state.categories));
   localStorage.setItem(STORE_KEYS.SETTINGS, JSON.stringify({
+    v: SETTINGS_VERSION,
     displayRadius: state.displayRadius,
     activeCategories: Array.from(state.activeCategories)
   }));
@@ -100,6 +113,15 @@ function haversineDistance(lat1, lng1, lat2, lng2) {
             Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
             Math.sin(dLng/2)**2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+// 地点1から地点2への方位角（北=0, 時計回り 0-360）
+function bearingBetween(lat1, lng1, lat2, lng2) {
+  const toRad = d => d * Math.PI / 180;
+  const p1 = toRad(lat1), p2 = toRad(lat2), dL = toRad(lng2 - lng1);
+  const y = Math.sin(dL) * Math.cos(p2);
+  const x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dL);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
 }
 
 function getCategory(id) {
@@ -158,33 +180,100 @@ function watchUserLocation() {
   );
 }
 
-// 日本の住所は番地・建物番号が末尾に来る。Nominatim は番地まで解決できない
-// ことが多いので、フル住所で空振りしたら数字以降を外した町名で再検索する。
-function buildAddressVariants(address) {
-  const variants = [address];
-  const noNum = address.replace(/[0-9０-９].*$/u, '').trim();
-  if (noNum && noNum !== address) variants.push(noNum);
-  return variants;
+// ====================================================
+// GEOCODING (v0.2 再構築)
+// 国土地理院(GSI)アドレス検索を第一候補に、Nominatim をフォールバックに。
+// GSI は日本の住所（番地・街区レベルまで）に強く、APIキー不要・CORS可。
+// それでも外れる場合は番地以降を落とした町名で再試行（approximate フラグ付き）。
+// ====================================================
+function normalizeAddress(s) {
+  return s.trim()
+    .replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)) // 全角数字→半角
+    .replace(/([0-9])[ー－‐−―ｰ〜~](?=[0-9])/g, '$1-') // 数字間のダッシュ類のみ統一（地名の長音は触らない）
+    .replace(/\s+/g, '');
 }
 
-async function geocodeAddress(address) {
-  const variants = buildAddressVariants(address);
-  for (let i = 0; i < variants.length; i++) {
-    const url = `https://nominatim.openstreetmap.org/search?format=json&accept-language=ja&limit=1&q=${encodeURIComponent(variants[i])}`;
-    let res;
-    try {
-      res = await fetch(url, { headers: { 'Accept': 'application/json' } });
-    } catch (_) { continue; }
-    if (!res.ok) continue;
-    const data = await res.json();
-    if (data && data.length) {
-      return {
-        lat: parseFloat(data[0].lat),
-        lng: parseFloat(data[0].lon),
-        displayName: data[0].display_name,
-        approximate: i > 0
-      };
-    }
+async function fetchJSON(url, timeoutMs = 8000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { headers: { 'Accept': 'application/json' }, signal: ctrl.signal });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (_) {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+// --- GSI 結果の妥当性チェック用正規化 ---
+// GSI は前方一致のあいまい検索で、ランドマーク名（例: 東京タワー）には
+// 無関係な候補を大量に返す。タイトルとクエリを同じ規則で正規化して
+// 前方一致するものだけを採用する。
+// 「一丁目１番」と「1-1」の表記揺れを吸収するため、漢数字→算用数字、
+// 丁目/番地/番/号→"-" に揃える（比較専用。表示や検索クエリには使わない）。
+function kanjiDigits(m) {
+  const d = { '〇':'0','一':'1','二':'2','三':'3','四':'4','五':'5','六':'6','七':'7','八':'8','九':'9' };
+  if (!m.includes('十')) return m.split('').map(c => d[c] || '').join('');
+  const [a, b] = m.split('十');
+  return (a ? d[a] : '1') + (b ? d[b] : '0');
+}
+
+function normCompare(s) {
+  return normalizeAddress(s)
+    .replace(/[〇一二三四五六七八九十]+(?=丁目|丁|番地|番|号)/g, kanjiDigits)
+    .replace(/(丁目|丁|番地|番|号)/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/-$/, '');
+}
+
+function gsiResultMatches(query, title) {
+  const q = normCompare(query);
+  const t = normCompare(title);
+  if (!q || !t) return false;
+  return q.startsWith(t) || t.startsWith(q);
+}
+
+async function geocodeGSI(q) {
+  const data = await fetchJSON('https://msearch.gsi.go.jp/address-search/AddressSearch?q=' + encodeURIComponent(q));
+  if (!Array.isArray(data) || data.length === 0) return null;
+  const best = data.find(e =>
+    e.geometry && e.geometry.coordinates &&
+    e.properties && gsiResultMatches(q, e.properties.title || '')
+  );
+  if (!best) return null;
+  return {
+    lat: best.geometry.coordinates[1],
+    lng: best.geometry.coordinates[0],
+    displayName: best.properties.title
+  };
+}
+
+async function geocodeNominatim(q) {
+  const data = await fetchJSON('https://nominatim.openstreetmap.org/search?format=json&accept-language=ja&limit=1&q=' + encodeURIComponent(q));
+  if (!Array.isArray(data) || data.length === 0) return null;
+  return {
+    lat: parseFloat(data[0].lat),
+    lng: parseFloat(data[0].lon),
+    displayName: data[0].display_name
+  };
+}
+
+async function geocodeAddress(raw) {
+  const addr = normalizeAddress(raw);
+  const trimmed = addr.replace(/[0-9].*$/, '').trim(); // 番地以降を外した町名
+  const attempts = [
+    { q: addr, fn: geocodeGSI, approx: false },
+    { q: addr, fn: geocodeNominatim, approx: false }
+  ];
+  if (trimmed && trimmed !== addr) {
+    attempts.push({ q: trimmed, fn: geocodeGSI, approx: true });
+    attempts.push({ q: trimmed, fn: geocodeNominatim, approx: true });
+  }
+  for (const a of attempts) {
+    const r = await a.fn(a.q);
+    if (r) return { ...r, approximate: a.approx };
   }
   throw new Error('Address not found');
 }
@@ -205,10 +294,12 @@ function initGeocoding() {
       state.geocodedCoords = coords;
       document.getElementById('resultLat').textContent = formatCoord(coords.lat);
       document.getElementById('resultLng').textContent = formatCoord(coords.lng);
+      document.getElementById('resultAddr').textContent =
+        '→ ' + coords.displayName + (coords.approximate ? '（番地まで特定できず・おおよその位置）' : '');
       resultEl.classList.add('visible');
-      toast(coords.approximate ? '番地までは特定できず、町名のおおよその位置です' : '位置を取得しました', coords.approximate);
+      toast(coords.approximate ? '町名レベルのおおよその位置です' : '位置を取得しました', coords.approximate);
     } catch (e) {
-      toast('住所が見つかりません。下の「現在地を使う」が確実です', true);
+      toast('住所が見つかりません。現地なら「現在地を使う」が確実です', true);
     } finally {
       btn.disabled = false;
       btn.textContent = 'Locate';
@@ -223,6 +314,7 @@ function initGeocoding() {
     state.geocodedCoords = { ...state.userCoords, displayName: 'Current Location' };
     document.getElementById('resultLat').textContent = formatCoord(state.userCoords.lat);
     document.getElementById('resultLng').textContent = formatCoord(state.userCoords.lng);
+    document.getElementById('resultAddr').textContent = '→ 現在地（GPS）';
     document.getElementById('addressInput').value = 'Current Location';
     resultEl.classList.add('visible');
     toast('現在地を使用します');
@@ -438,6 +530,7 @@ function initSave() {
       address: state.geocodedCoords.displayName || document.getElementById('addressInput').value,
       image: state.currentImage,
       categoryId: state.selectedCategoryId,
+      heading: null, // 方位（度・北=0）。現地での「画角フィット」でのみ設定される
       createdAt: Date.now()
     };
     state.items.push(item);
@@ -490,7 +583,7 @@ function renderItemList() {
       <div class="item-thumb" style="background-image: url('${item.image}')"></div>
       <div class="item-info">
         <div class="item-name">${escapeHtml(item.name)}</div>
-        <div class="item-meta">${formatCoord(item.lat)}, ${formatCoord(item.lng)}</div>
+        <div class="item-meta">${formatCoord(item.lat)}, ${formatCoord(item.lng)}${item.heading != null ? ' · 向き固定 ' + Math.round(item.heading) + '°' : ''}</div>
         <div class="item-category">● ${cat.name}</div>
       </div>
       <button class="item-delete" data-id="${item.id}" aria-label="Delete">×</button>
@@ -569,48 +662,300 @@ function initDistanceSlider() {
 }
 
 // ====================================================
-// AR SCENE
+// AR INTERACTION (v0.2)
+// 50m以内 → ポラロイドカード → タップで展開（厚み付きパネルがAR空間に出現）
+// → 下スワイプで戻す。展開中に10m以上離れると方向矢印。
+// 10m以内では「画角フィット」で向きを設定できる。
 // ====================================================
+
+function getNearbyItems() {
+  if (!state.userCoords) return [];
+  return state.items
+    .filter(i => state.activeCategories.has(i.categoryId))
+    .map(i => ({
+      item: i,
+      dist: haversineDistance(state.userCoords.lat, state.userCoords.lng, i.lat, i.lng)
+    }))
+    .filter(e => e.dist <= state.displayRadius)
+    .sort((a, b) => a.dist - b.dist);
+}
+
+// AR.js の gps 空間: +x=東, -z=北。plane の正面は +z（=南向きが rotation 0）。
+// パネル正面を方位 bearing（北=0・時計回り）へ向ける yaw 角:
+function headingToYaw(bearing) {
+  return ((180 - bearing) % 360 + 360) % 360;
+}
+
+let _expandedEls = null; // { group, label } 展開中のARエンティティ参照
+
 function renderARScene() {
+  renderExpandedEntity();
+}
+
+function renderExpandedEntity() {
   const container = document.getElementById('arEntities');
   if (!container) return;
   container.innerHTML = '';
+  _expandedEls = null;
 
-  if (!state.userCoords) return;
+  const item = state.items.find(i => i.id === state.expandedItemId);
+  if (!item) return;
 
-  let visibleCount = 0;
-  state.items.forEach(item => {
-    if (!state.activeCategories.has(item.categoryId)) return;
-    const dist = haversineDistance(
-      state.userCoords.lat, state.userCoords.lng,
-      item.lat, item.lng
-    );
-    if (dist > state.displayRadius) return;
-    visibleCount++;
+  const cat = getCategory(item.categoryId);
+  const W = 10; // パネル幅(m)。50m圏内で見やすいサイズ
 
-    const cat = getCategory(item.categoryId);
+  const group = document.createElement('a-entity');
+  group.setAttribute('gps-entity-place', `latitude: ${item.lat}; longitude: ${item.lng};`);
 
-    // 画像エンティティ
-    const entity = document.createElement('a-image');
-    entity.setAttribute('src', item.image);
-    entity.setAttribute('gps-entity-place', `latitude: ${item.lat}; longitude: ${item.lng};`);
-    entity.setAttribute('scale', '15 15 15');
-    entity.setAttribute('look-at', '[gps-camera]');
-    container.appendChild(entity);
+  if (!state.fitMode && item.heading == null) {
+    // 方向未設定 → 常にユーザー正面（ビルボード）
+    group.setAttribute('look-at', '[gps-camera]');
+  } else {
+    // 方向固定 or フィット操作中
+    const bearing = state.fitMode
+      ? (((state.deviceHeading != null ? state.deviceHeading : 0) + 180) % 360)
+      : item.heading;
+    group.setAttribute('rotation', `0 ${headingToYaw(bearing)} 0`);
+  }
 
-    // ラベル
-    const label = document.createElement('a-text');
-    label.setAttribute('value', `${item.name}\n${Math.round(dist)}m`);
-    label.setAttribute('color', cat.color);
-    label.setAttribute('align', 'center');
-    label.setAttribute('gps-entity-place', `latitude: ${item.lat}; longitude: ${item.lng};`);
-    label.setAttribute('scale', '20 20 20');
-    label.setAttribute('position', '0 -10 0');
-    label.setAttribute('look-at', '[gps-camera]');
-    container.appendChild(label);
+  // 台座: ポラロイドの白フチ＋厚み（パネル感）
+  const board = document.createElement('a-box');
+  board.setAttribute('color', '#f5f2ea');
+  board.setAttribute('depth', 0.5);
+
+  const img = document.createElement('a-image');
+  img.setAttribute('src', item.image);
+  img.setAttribute('position', '0 0.5 0.3'); // 下フチを厚く（ポラロイド比率）
+
+  const label = document.createElement('a-text');
+  label.setAttribute('color', cat.color);
+  label.setAttribute('align', 'center');
+  label.setAttribute('scale', '8 8 8');
+  label.setAttribute('look-at', '[gps-camera]');
+  label.setAttribute('value', item.name);
+
+  function applySize(h) {
+    board.setAttribute('width', W + 1.2);
+    board.setAttribute('height', h + 2.2);
+    img.setAttribute('width', W);
+    img.setAttribute('height', h);
+    label.setAttribute('position', `0 ${-(h / 2 + 2.4)} 0`);
+  }
+  applySize(W * 0.75);
+
+  // 画像の実アスペクト比に合わせて再調整
+  const probe = new Image();
+  probe.onload = () => {
+    if (probe.naturalWidth && probe.naturalHeight) {
+      applySize(W * probe.naturalHeight / probe.naturalWidth);
+    }
+  };
+  probe.src = item.image;
+
+  group.appendChild(board);
+  group.appendChild(img);
+  group.appendChild(label);
+  container.appendChild(group);
+  _expandedEls = { group, label };
+}
+
+// ---- 近接カード（ポラロイド） ----
+let _cardsKey = '';
+function renderCards(nearby) {
+  const wrap = document.getElementById('arCards');
+  if (!wrap) return;
+  if (state.expandedItemId) {
+    wrap.innerHTML = '';
+    _cardsKey = '';
+    return;
+  }
+  const key = nearby.map(e => e.item.id).join(',');
+  if (key !== _cardsKey) {
+    _cardsKey = key;
+    wrap.innerHTML = '';
+    nearby.forEach(({ item }) => {
+      const card = document.createElement('div');
+      card.className = 'polaroid';
+      card.dataset.id = item.id;
+      card.innerHTML = `
+        <img class="polaroid-photo" src="${item.image}" alt="">
+        <div class="polaroid-name">${escapeHtml(item.name)}</div>
+        <div class="polaroid-dist" data-dist>—</div>`;
+      card.addEventListener('click', () => expandItem(item.id));
+      wrap.appendChild(card);
+    });
+  }
+  // 距離表示は毎tick更新
+  nearby.forEach(({ item, dist }) => {
+    const el = wrap.querySelector(`[data-id="${item.id}"] [data-dist]`);
+    if (el) el.textContent = Math.round(dist) + 'm';
+  });
+}
+
+function expandItem(id) {
+  state.expandedItemId = id;
+  state.fitMode = false;
+  document.getElementById('arContainer').classList.add('expanded');
+  renderExpandedEntity();
+  updateExpandedHUD();
+}
+
+function collapseItem() {
+  state.expandedItemId = null;
+  state.fitMode = false;
+  document.getElementById('arContainer').classList.remove('expanded');
+  renderExpandedEntity();
+  updateExpandedHUD();
+}
+
+// ---- 展開中HUD（情報ピル・方向矢印・画角フィット） ----
+function updateExpandedHUD() {
+  const guide = document.getElementById('arGuide');
+  const fit = document.getElementById('arFit');
+  const info = document.getElementById('arExpandedInfo');
+  const item = state.items.find(i => i.id === state.expandedItemId);
+
+  if (!item || !state.userCoords) {
+    guide.classList.remove('visible');
+    fit.classList.remove('visible');
+    if (!item && state.expandedItemId) collapseItem(); // 展開中に削除された場合
+    return;
+  }
+
+  const dist = haversineDistance(state.userCoords.lat, state.userCoords.lng, item.lat, item.lng);
+  info.textContent = `${item.name} · ${Math.round(dist)}m`;
+  if (_expandedEls) {
+    _expandedEls.label.setAttribute('value', `${item.name}\n${Math.round(dist)}m`);
+  }
+
+  // 10m以上離れている → ロケーションを指す矢印
+  if (dist > ARROW_MIN_DIST) {
+    guide.classList.add('visible');
+    document.getElementById('arGuideText').textContent = `${item.name} · ${Math.round(dist)}m`;
+    updateGuideArrow(item);
+  } else {
+    guide.classList.remove('visible');
+  }
+
+  // 10m以内 → 画角フィットの案内（フィット操作中は距離が揺れても出し続ける）
+  if (state.fitMode || dist <= FIT_MAX_DIST) {
+    fit.classList.add('visible');
+    document.getElementById('arFitRowIdle').style.display = state.fitMode ? 'none' : 'flex';
+    document.getElementById('arFitRowActive').style.display = state.fitMode ? 'flex' : 'none';
+    document.getElementById('btnFitReset').style.display =
+      (!state.fitMode && item.heading != null) ? 'block' : 'none';
+    document.getElementById('arFitMsg').textContent = state.fitMode
+      ? '画像が実際の景色に正しく重なる向きへ、その場で身体ごと回ってください。合ったら「この向きで固定」。'
+      : 'この画像を正しい画角にフィットさせることにご協力ください';
+  } else {
+    fit.classList.remove('visible');
+  }
+}
+
+function updateGuideArrow(item) {
+  const svg = document.getElementById('arGuideArrow');
+  if (!svg || !state.userCoords) return;
+  const bearing = bearingBetween(state.userCoords.lat, state.userCoords.lng, item.lat, item.lng);
+  const rel = state.deviceHeading != null
+    ? (bearing - state.deviceHeading + 360) % 360
+    : bearing;
+  svg.style.transform = `rotate(${rel}deg)`;
+}
+
+// ---- コンパス（方位トラッカー） ----
+let _headingListening = false;
+function startHeadingTracker() {
+  if (_headingListening) return;
+  _headingListening = true;
+  window.addEventListener('deviceorientation', (e) => {
+    let h = null;
+    if (typeof e.webkitCompassHeading === 'number' && !isNaN(e.webkitCompassHeading)) {
+      h = e.webkitCompassHeading; // iOS: 0=北・時計回り
+    } else if (e.absolute === true && typeof e.alpha === 'number') {
+      h = (360 - e.alpha) % 360;  // Android(absolute): alpha は反時計回り
+    }
+    if (h == null) return;
+    state.deviceHeading = h;
+
+    // 矢印とフィット中のパネルはセンサーイベント直結でなめらかに回す
+    const item = state.items.find(i => i.id === state.expandedItemId);
+    if (!item) return;
+    if (document.getElementById('arGuide').classList.contains('visible')) {
+      updateGuideArrow(item);
+    }
+    if (state.fitMode && _expandedEls) {
+      const facing = (h + 180) % 360; // ユーザーの方を向く向き
+      _expandedEls.group.setAttribute('rotation', `0 ${headingToYaw(facing)} 0`);
+    }
+  }, true);
+}
+
+// ---- ARループ（距離・カード・HUDの定期更新） ----
+let _arLoop = null;
+function startARLoop() {
+  stopARLoop();
+  _arLoop = setInterval(() => {
+    const nearby = getNearbyItems();
+    renderCards(nearby);
+    updateExpandedHUD();
+    updateInRangeCount();
+  }, 600);
+}
+function stopARLoop() {
+  if (_arLoop) { clearInterval(_arLoop); _arLoop = null; }
+}
+
+// ---- スワイプで戻す & 画角フィット操作 ----
+function initARInteractions() {
+  const zone = document.getElementById('arSwipeZone');
+  let startY = null;
+  zone.addEventListener('touchstart', (e) => { startY = e.touches[0].clientY; }, { passive: true });
+  zone.addEventListener('touchend', (e) => {
+    if (startY == null) return;
+    const dy = e.changedTouches[0].clientY - startY;
+    startY = null;
+    if (dy > 70) collapseItem();
+  }, { passive: true });
+  document.getElementById('arSwipeHint').addEventListener('click', collapseItem);
+
+  document.getElementById('btnFitStart').addEventListener('click', () => {
+    if (state.deviceHeading == null) {
+      toast('コンパスが取得できていません。端末を8の字に動かしてみてください', true);
+      return;
+    }
+    state.fitMode = true;
+    renderExpandedEntity();
+    updateExpandedHUD();
   });
 
-  document.getElementById('arVisibleCount').textContent = visibleCount;
+  document.getElementById('btnFitConfirm').addEventListener('click', () => {
+    const item = state.items.find(i => i.id === state.expandedItemId);
+    if (!item || state.deviceHeading == null) return;
+    item.heading = Math.round(((state.deviceHeading + 180) % 360) * 10) / 10;
+    save();
+    state.fitMode = false;
+    renderExpandedEntity();
+    updateExpandedHUD();
+    renderItemList();
+    toast('向きを固定しました ✓');
+  });
+
+  document.getElementById('btnFitCancel').addEventListener('click', () => {
+    state.fitMode = false;
+    renderExpandedEntity();
+    updateExpandedHUD();
+  });
+
+  document.getElementById('btnFitReset').addEventListener('click', () => {
+    const item = state.items.find(i => i.id === state.expandedItemId);
+    if (!item) return;
+    item.heading = null;
+    save();
+    renderExpandedEntity();
+    updateExpandedHUD();
+    renderItemList();
+    toast('向きをリセットしました（常に正面向きになります）');
+  });
 }
 
 // ---- AR scene の動的マウント／破棄 ----
@@ -728,6 +1073,8 @@ function initARLaunch() {
     document.getElementById('arContainer').classList.add('active');
     document.getElementById('arStatusText').textContent = 'LOCATING...';
     mountARScene();
+    startHeadingTracker(); // 許可取得後なので iOS でも webkitCompassHeading が来る
+    startARLoop();
 
     // AR.js が video を挿入するまで少し時間がかかる。複数回試して取り込み・再生させる。
     [200, 700, 1500, 3000].forEach(t => setTimeout(() => {
@@ -739,6 +1086,8 @@ function initARLaunch() {
   });
 
   document.getElementById('closeAR').addEventListener('click', () => {
+    collapseItem();
+    stopARLoop();
     document.getElementById('arContainer').classList.remove('active');
     unmountARScene();
   });
@@ -756,6 +1105,7 @@ function init() {
   initSave();
   initDistanceSlider();
   initARLaunch();
+  initARInteractions();
   renderCategoryPicker();
   renderCategoryToggles();
   renderItemList();

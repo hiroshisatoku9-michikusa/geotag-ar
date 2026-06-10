@@ -1231,6 +1231,200 @@ html, body {
   z-index: 1 !important;
   display: block !important;
 }
+
+/* ============================================
+   v0.2 — 近接カード / 展開パネル / 方向ガイド / 画角フィット
+   ============================================ */
+
+/* ポラロイドカード列（50m以内のタグ） */
+.ar-cards {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding: 6px 2px 14px;
+  scrollbar-width: none;
+}
+.ar-cards::-webkit-scrollbar { display: none; }
+.ar-cards:empty { display: none; }
+
+.polaroid {
+  flex: 0 0 auto;
+  width: 112px;
+  background: #faf8f2;
+  border-radius: 3px;
+  padding: 7px 7px 10px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5);
+  transform: rotate(-1.6deg);
+  animation: cardIn 0.35s ease;
+  color: #23252b;
+  cursor: pointer;
+}
+.polaroid:nth-child(even) { transform: rotate(1.8deg); }
+.polaroid:active { transform: scale(0.96); }
+
+.polaroid-photo {
+  width: 98px;
+  height: 98px;
+  object-fit: cover;
+  display: block;
+  background: #d8d5cd;
+}
+.polaroid-name {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 11px;
+  margin-top: 7px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.polaroid-dist {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: #85827a;
+  margin-top: 1px;
+  letter-spacing: 0.08em;
+}
+@keyframes cardIn {
+  from { opacity: 0; transform: translateY(30px); }
+}
+
+/* 展開中は下部HUD（カード・カテゴリ・スライダー）を隠す */
+.ar-container.expanded .ar-hud-bottom { display: none; }
+
+.ar-crosshair { pointer-events: none; }
+
+/* 方向ガイド矢印 */
+.ar-guide {
+  position: absolute;
+  top: 88px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  z-index: 5;
+  pointer-events: none;
+}
+.ar-guide.visible { display: flex; }
+.ar-guide-arrow {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: rgba(10, 14, 26, 0.78);
+  border: 1px solid var(--accent-cyan);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.ar-guide-arrow svg { transition: transform 0.12s linear; }
+.ar-guide-text {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--text-primary);
+  background: rgba(10, 14, 26, 0.78);
+  padding: 4px 12px;
+  border-radius: 100px;
+  border: 1px solid var(--line-faint);
+}
+
+/* 画角フィットバナー */
+.ar-fit {
+  position: absolute;
+  bottom: 128px;
+  left: 16px;
+  right: 16px;
+  display: none;
+  background: rgba(10, 14, 26, 0.92);
+  border: 1px solid var(--accent-cyan);
+  border-radius: 14px;
+  padding: 14px 16px;
+  z-index: 6;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.ar-fit.visible { display: block; }
+.ar-fit-msg {
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+}
+.ar-fit-actions { display: flex; gap: 8px; }
+.ar-fit-btn {
+  flex: 1;
+  padding: 11px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line-bright);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+}
+.ar-fit-btn.primary {
+  background: var(--accent-cyan);
+  border-color: var(--accent-cyan);
+  color: #06281f;
+  font-weight: 700;
+}
+
+/* 展開中の操作ゾーン（スワイプ検知） */
+.ar-swipe-zone {
+  position: absolute;
+  top: 80px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: none;
+  z-index: 4;
+}
+.ar-container.expanded .ar-swipe-zone { display: block; }
+.ar-expanded-info {
+  position: absolute;
+  bottom: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--text-primary);
+  background: rgba(10, 14, 26, 0.78);
+  padding: 6px 14px;
+  border-radius: 100px;
+  border: 1px solid var(--line-faint);
+  white-space: nowrap;
+}
+.ar-swipe-hint {
+  position: absolute;
+  bottom: 26px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  color: var(--text-secondary);
+  animation: hintFloat 1.6s ease-in-out infinite;
+  white-space: nowrap;
+}
+@keyframes hintFloat {
+  0%, 100% { transform: translate(-50%, 0); }
+  50% { transform: translate(-50%, 6px); }
+}
+
+/* ジオコード結果の住所表示 */
+.coords-addr {
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.coords-addr:empty { display: none; }
 </style>
 </head>
 <body>
@@ -1241,7 +1435,7 @@ html, body {
   <header class="header">
     <div class="brand">
       <div class="brand-mark">GEOTAG</div>
-      <div class="brand-tag">Location · AR · v0.1</div>
+      <div class="brand-tag">Location · AR · v0.2</div>
     </div>
     <div class="status-cluster">
       <div class="coord-display">
@@ -1295,10 +1489,10 @@ html, body {
 
       <div class="ar-distance-bar" style="margin-top: 20px;">
         <div class="distance-label-row">
-          <span>Display Radius</span>
-          <span class="distance-value"><span id="distanceVal">500</span> M</span>
+          <span>Card Range</span>
+          <span class="distance-value"><span id="distanceVal">50</span> M</span>
         </div>
-        <input type="range" min="50" max="2000" value="500" step="50" class="distance-slider" id="distanceSlider">
+        <input type="range" min="50" max="2000" value="50" step="50" class="distance-slider" id="distanceSlider">
       </div>
     </div>
   </div>
@@ -1322,6 +1516,7 @@ html, body {
         <div class="coords-result" id="coordsResult">
           <div>LAT: <span id="resultLat">—</span></div>
           <div>LNG: <span id="resultLng">—</span></div>
+          <div class="coords-addr" id="resultAddr"></div>
         </div>
         <button type="button" class="btn-secondary" id="useCurrentLocation" style="margin-top: 8px;">◎ Use My Current Location</button>
       </div>
@@ -1385,15 +1580,44 @@ html, body {
       <div class="ar-crosshair-circle"></div>
     </div>
 
-    <div class="ar-hud-bottom">
+    <!-- 方向ガイド矢印（パネル展開中・10m以上離れているとき） -->
+    <div class="ar-guide" id="arGuide">
+      <div class="ar-guide-arrow">
+        <svg id="arGuideArrow" viewBox="0 0 24 24" width="26" height="26"><path d="M12 2 L19 21 L12 16.5 L5 21 Z" fill="#00ffd1"/></svg>
+      </div>
+      <div class="ar-guide-text" id="arGuideText"></div>
+    </div>
+
+    <!-- 画角フィット（パネル展開中・ロケーションの10m以内のみ） -->
+    <div class="ar-fit" id="arFit">
+      <div class="ar-fit-msg" id="arFitMsg">この画像を正しい画角にフィットさせることにご協力ください</div>
+      <div class="ar-fit-actions" id="arFitRowIdle">
+        <button class="ar-fit-btn primary" id="btnFitStart">画角を合わせる</button>
+        <button class="ar-fit-btn" id="btnFitReset" style="display:none;">向きをリセット</button>
+      </div>
+      <div class="ar-fit-actions" id="arFitRowActive" style="display:none;">
+        <button class="ar-fit-btn primary" id="btnFitConfirm">この向きで固定</button>
+        <button class="ar-fit-btn" id="btnFitCancel">キャンセル</button>
+      </div>
+    </div>
+
+    <!-- 展開中の操作ゾーン（下スワイプでカードに戻す） -->
+    <div class="ar-swipe-zone" id="arSwipeZone">
+      <div class="ar-expanded-info" id="arExpandedInfo"></div>
+      <div class="ar-swipe-hint" id="arSwipeHint">▼ 下へスワイプでカードに戻す</div>
+    </div>
+
+    <div class="ar-hud-bottom" id="arHudBottom">
+      <!-- 50m以内に入ったタグのポラロイドカード -->
+      <div class="ar-cards" id="arCards"></div>
       <div class="ar-categories-label">Active Categories</div>
       <div class="ar-categories" id="arCategoryToggles"></div>
       <div class="ar-distance-bar">
         <div class="distance-label-row">
-          <span>Radius · <span id="arVisibleCount">0</span> in view</span>
-          <span class="distance-value"><span id="arDistanceVal">500</span> M</span>
+          <span>Card Range · <span id="arVisibleCount">0</span> nearby</span>
+          <span class="distance-value"><span id="arDistanceVal">50</span> M</span>
         </div>
-        <input type="range" min="50" max="2000" value="500" step="50" class="distance-slider" id="arDistanceSlider">
+        <input type="range" min="50" max="2000" value="50" step="50" class="distance-slider" id="arDistanceSlider">
       </div>
     </div>
   </div>
