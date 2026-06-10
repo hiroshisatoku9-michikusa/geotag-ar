@@ -980,10 +980,9 @@ function mountARScene() {
 }
 
 function unmountARScene() {
-  if (_arVideoObserver) { _arVideoObserver.disconnect(); _arVideoObserver = null; }
   const scene = document.getElementById('arScene');
   if (scene) scene.parentNode && scene.parentNode.removeChild(scene);
-  // AR.js が body 直下や他所に挿した video もカメラを止めて削除
+  // AR.js が body 直下に挿した video もカメラを止めて削除
   document.querySelectorAll('video#arjs-video, video.arjs-video').forEach(v => {
     try {
       const stream = v.srcObject;
@@ -993,56 +992,43 @@ function unmountARScene() {
   });
 }
 
-// AR.js が挿入した <video> を AR コンテナ内に取り込み、確実に全画面で再生させる。
-// AR.js は video.style に transform/translate と絶対px幅高さをインラインで書き込み、
-// portrait のスマホだと中央に細い縦帯として表示されてしまう。cssText で完全に
-// 上書きし、AR.js が style 属性を書き換えてきても MutationObserver で即時上書きする。
-const AR_VIDEO_CSS = [
-  'position:absolute',
-  'top:0',
-  'left:0',
-  'right:0',
-  'bottom:0',
-  'width:100%',
-  'height:100%',
-  'max-width:none',
-  'max-height:none',
-  'min-width:0',
-  'min-height:0',
-  'margin:0',
-  'padding:0',
-  'transform:none',
-  'object-fit:cover',
-  'z-index:1',
-  'display:block',
-  'opacity:1'
-].map(s => s + ' !important').join(';') + ';';
+// ====================================================
+// カメラフィード（アプリ自身で管理）
+// AR.js の video 生成はタイミング・失敗理由とも不透明で黒画面の温床
+// だったため、表示用カメラは LAUNCH ジェスチャー内で自前の
+// getUserMedia → <video id="geotag-video"> に流す。
+// AR.js 側の video は CSS で非表示（位置トラッキングには影響しない）。
+// ====================================================
+let _ownStream = null;
 
-let _arVideoObserver = null;
-
-function forceVideoStyle(v) {
-  if (v.style.cssText !== AR_VIDEO_CSS) v.style.cssText = AR_VIDEO_CSS;
+function mountOwnVideo(stream) {
+  _ownStream = stream;
+  const container = document.getElementById('arContainer');
+  let v = document.getElementById('geotag-video');
+  if (!v) {
+    v = document.createElement('video');
+    v.id = 'geotag-video';
+    v.setAttribute('playsinline', '');
+    v.setAttribute('webkit-playsinline', '');
+    v.muted = true;
+    v.autoplay = true;
+    container.insertBefore(v, container.firstChild);
+  }
+  v.srcObject = stream;
+  v.addEventListener('playing', () => {
+    document.getElementById('arStatusText').textContent = 'TRACKING';
+  }, { once: true });
+  const p = v.play();
+  if (p && p.catch) p.catch(() => {});
 }
 
-function fixARJSVideoPlacement() {
-  const container = document.getElementById('arContainer');
-  const v = document.getElementById('arjs-video') || document.querySelector('video.arjs-video');
-  if (!container || !v) return false;
-  if (v.parentNode !== container) container.appendChild(v);
-  v.setAttribute('playsinline', '');
-  v.setAttribute('webkit-playsinline', '');
-  v.muted = true;
-  forceVideoStyle(v);
-
-  // AR.js が後から style を書き換えてきても即座に戻す
-  if (_arVideoObserver) _arVideoObserver.disconnect();
-  _arVideoObserver = new MutationObserver(() => forceVideoStyle(v));
-  _arVideoObserver.observe(v, { attributes: true, attributeFilter: ['style'] });
-
-  // iOS では明示 play() が要るケースがある
-  const p = v.play && v.play();
-  if (p && p.catch) p.catch(() => {});
-  return true;
+function stopOwnVideo() {
+  if (_ownStream) {
+    try { _ownStream.getTracks().forEach(t => t.stop()); } catch (_) {}
+    _ownStream = null;
+  }
+  const v = document.getElementById('geotag-video');
+  if (v) { v.srcObject = null; v.remove(); }
 }
 
 function initARLaunch() {
@@ -1053,6 +1039,11 @@ function initARLaunch() {
     }
     if (!state.userCoords) {
       toast('現在地が取得できていません', true);
+      return;
+    }
+    // ARライブラリの読み込み確認（CDN取得失敗のまま起動すると無言で黒画面になる）
+    if (!window.AFRAME || !AFRAME.components['gps-camera']) {
+      toast('ARライブラリが読み込めていません。電波の良い場所でページを再読み込みしてください', true);
       return;
     }
 
@@ -1069,46 +1060,45 @@ function initARLaunch() {
       console.warn(e);
     }
 
+    // カメラ許可をユーザージェスチャー内で先に取得。
+    // ここで失敗すればAR画面には入らず、理由を具体的に表示できる。
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false
+      });
+    } catch (e) {
+      const name = (e && e.name) || '';
+      if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+        toast('カメラが拒否されています。アドレスバーの「ぁあ」→ Webサイトの設定 → カメラを「許可」にして再読み込みしてください', true);
+      } else if (name === 'NotFoundError') {
+        toast('カメラが見つかりません', true);
+      } else if (name === 'NotReadableError') {
+        toast('カメラが他のアプリに使われています。他のカメラアプリを閉じてください', true);
+      } else {
+        toast('カメラを起動できません: ' + (name || e.message), true);
+      }
+      return;
+    }
+
     // コンテナを表示してからシーンを動的マウント（ユーザージェスチャー内）
     document.getElementById('arContainer').classList.add('active');
     document.getElementById('arStatusText').textContent = 'LOCATING...';
     mountARScene();
+    mountOwnVideo(stream); // カメラ映像は自前で即表示
     startHeadingTracker(); // 許可取得後なので iOS でも webkitCompassHeading が来る
     startARLoop();
-    startVideoFixer();
+    setTimeout(renderARScene, 800);
   });
 
   document.getElementById('closeAR').addEventListener('click', () => {
     collapseItem();
     stopARLoop();
-    stopVideoFixer();
+    stopOwnVideo();
     document.getElementById('arContainer').classList.remove('active');
     unmountARScene();
   });
-}
-
-// AR.js が <video> を挿入するタイミングは、カメラ許可ダイアログのタップ待ちで
-// 数秒〜数十秒遅れることがある（固定回数のリトライだと時間切れで黒画面になる）。
-// 成功するまで定期的に試し続け、見つけた時点で TRACKING に切り替える。
-let _videoFixTimer = null;
-function startVideoFixer() {
-  stopVideoFixer();
-  let attempts = 0;
-  _videoFixTimer = setInterval(() => {
-    attempts++;
-    if (fixARJSVideoPlacement()) {
-      document.getElementById('arStatusText').textContent = 'TRACKING';
-      renderARScene();
-      stopVideoFixer();
-    } else if (attempts > 150) { // 約60秒で諦める
-      stopVideoFixer();
-      document.getElementById('arStatusText').textContent = 'CAMERA ERROR';
-      toast('カメラ映像を取得できませんでした。一度閉じて再起動してください', true);
-    }
-  }, 400);
-}
-function stopVideoFixer() {
-  if (_videoFixTimer) { clearInterval(_videoFixTimer); _videoFixTimer = null; }
 }
 
 // ====================================================

@@ -9,7 +9,8 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
 <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
-<script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar-nft.js"></script>
+<!-- raw.githack の master 直読みは不安定なので jsDelivr のバージョン固定に変更 -->
+<script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.7/aframe/build/aframe-ar-nft.js"></script>
 <style>
 :root {
   --bg-deep: #060812;
@@ -1216,12 +1217,13 @@ html, body {
   z-index: 2;
 }
 
-/* AR.js が body 直下に差し込む <video id="arjs-video"> を
-   AR コンテナ内・全画面・カメラフィードとして表示させる。
-   fixARJSVideoPlacement() が動的に container 内へ移動した後でも、
-   このルールでサイズと前後関係を担保する。 */
-#arjs-video,
-.ar-container video {
+/* カメラ表示はアプリ管理の #geotag-video が担う。
+   AR.js が body 直下に挿す video は生成タイミングが不定で
+   黒画面の原因になっていたため、表示には使わない。 */
+#arjs-video {
+  display: none !important;
+}
+#geotag-video {
   position: absolute !important;
   top: 0 !important;
   left: 0 !important;
@@ -1230,6 +1232,7 @@ html, body {
   object-fit: cover !important;
   z-index: 1 !important;
   display: block !important;
+  background: #000;
 }
 
 /* ============================================
@@ -1641,6 +1644,6 @@ html, body {
 </div>
 
 <!-- ?v= はキャッシュバスター。app.js を変えたら必ず番号を上げること -->
-<script src="app.js?v=021"></script>
+<script src="app.js?v=022"></script>
 </body>
 </html>
